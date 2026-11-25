@@ -31,7 +31,9 @@ function ingestWithStagingAndDlq(
                validateInt($rec['zone_id'] ?? null, 'zone'),
                validateFloat($rec['temp_k'] ?? null, 'temp'),
                validateFloat($rec['flow'] ?? null, 'flow'),
-               isset($rec['note']) ? (string) $rec['note'] : null,
+               isset($rec['note'])
+                  ? (string) $rec['note']
+                  : null,
             ]);
          } catch (InvalidArgumentException $e) {
             $rejected++;
