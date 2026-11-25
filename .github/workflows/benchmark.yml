@@ -1,0 +1,53 @@
+name: PHP 8.4 + PostgreSQL 17 COPY Benchmark
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup PHP 8.4 with pdo_pgsql and pgsql
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo, pdo_pgsql, pgsql, mbstring
+          coverage: none
+      - name: Syntax check all 5 PHP Architect listings
+        run: |
+          for f in listings/*.php; do
+            php -l "$f"
+          done
+      - name: Run reproducible 50,000-row benchmark (3 runs + hardware specs)
+        env:
+          PG_DSN: "pgsql:host=127.0.0.1;port=5432;dbname=bench"
+          PG_USER: "postgres"
+          PG_PASS: "postgres"
+        run: |
+          php -v
+          lscpu | grep -E "Model name|CPU\(s\):" || true
+          echo "=== Warmup Run (10,000 rows) ==="
+          php listings/listing5.php 10000
+          echo "=== Official Benchmark Run #1 (50,000 rows) ==="
+          php listings/listing5.php 50000
+          echo "=== Official Benchmark Run #2 (50,000 rows) ==="
+          php listings/listing5.php 50000
+          echo "=== Official Benchmark Run #3 (50,000 rows) ==="
+          php listings/listing5.php 50000
