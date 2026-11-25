@@ -24,47 +24,69 @@ function openPgsqlPdo(
 }
 
 /**
- * Streams a Generator directly into PostgreSQL COPY.
+ * Streams an iterable/Generator into PostgreSQL COPY
+ * using bounded array chunks (PHP 8.4+ strict-typed).
  *
  * @param iterable<int, string> $lines
  */
 function copyGeneratorViaPdo(
    PDO $pdo,
    string $tableWithCols,
-   iterable $lines
-): void {
-   $rows = is_array($lines) || $lines instanceof Traversable
-      ? $lines
-      : (static function () use ($lines): Generator {
-         yield from $lines;
-      })();
+   iterable $lines,
+   int $chunkSize = 10_000
+): int {
+   $total = 0;
+   $chunk = [];
 
    $pdo->beginTransaction();
    try {
-      if ($pdo instanceof Pgsql) {
-         $ok = $pdo->copyFromArray(
-            $tableWithCols,
-            $rows,
-            "\t",
-            '\\\\N'
-         );
-      } else {
-         $ok = $pdo->pgsqlCopyFromArray(
-            $tableWithCols,
-            $rows,
-            "\t",
-            '\\\\N'
-         );
+      foreach ($lines as $line) {
+         $chunk[] = $line;
+         if (count($chunk) >= $chunkSize) {
+            flushPdoCopyChunk($pdo, $tableWithCols, $chunk);
+            $total += count($chunk);
+            $chunk = [];
+         }
       }
 
-      if ($ok === false) {
-         throw new RuntimeException('PDO COPY returned false');
+      if ($chunk !== []) {
+         flushPdoCopyChunk($pdo, $tableWithCols, $chunk);
+         $total += count($chunk);
       }
+
       $pdo->commit();
+      return $total;
    } catch (Throwable $e) {
       if ($pdo->inTransaction()) {
          $pdo->rollBack();
       }
       throw $e;
+   }
+}
+
+/**
+ * @param list<string> $rows
+ */
+function flushPdoCopyChunk(
+   PDO $pdo,
+   string $tableWithCols,
+   array $rows
+): void {
+   $ok = ($pdo instanceof Pgsql)
+      ? $pdo->copyFromArray(
+         $tableWithCols,
+         $rows,
+         "\t",
+         '\\\\N'
+      )
+      : $pdo->pgsqlCopyFromArray(
+         $tableWithCols,
+         $rows,
+         "\t",
+         '\\\\N'
+      );
+
+   if ($ok === false) {
+      throw new RuntimeException('PDO COPY returned false');
    }
 }

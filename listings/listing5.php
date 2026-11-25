@@ -38,26 +38,35 @@ function generateRows(int $count): Generator {
    }
 }
 
-function measure(string $label, callable $fn): void {
+function measure(
+   string $label,
+   int $rows,
+   callable $fn
+): void {
+   if (function_exists('memory_reset_peak_usage')) {
+      memory_reset_peak_usage();
+   }
    gc_collect_cycles();
-   $memBefore = memory_get_usage(true);
    $t0 = hrtime(true);
    $fn();
    $ms = (hrtime(true) - $t0) / 1e6;
-   $peakMb = memory_get_peak_usage(true) / 1048576;
-   $deltaMb = (memory_get_usage(true) - $memBefore) / 1048576;
+   $rps = $rows / ($ms / 1000.0);
+   $peakMb = memory_get_peak_usage(false) / 1048576;
    printf(
-      "%-28s | %8.1f ms | peak %5.1f MB (delta %+.1f MB)\n",
+      "%-28s | %7.1f ms | %9.0f rows/s | %4.2f MB\n",
       $label,
       $ms,
-      $peakMb,
-      $deltaMb
+      $rps,
+      $peakMb
    );
 }
 
 // 1. Row-by-row prepared INSERT
 $pdo->exec('TRUNCATE bench_telemetry');
-measure("Prepared INSERT ({$rows})", function () use ($pdo, $rows) {
+measure("Prepared INSERT ({$rows})", $rows, function () use (
+   $pdo,
+   $rows
+) {
    $pdo->beginTransaction();
    $st = $pdo->prepare(
       'INSERT INTO bench_telemetry VALUES (?, ?, ?, ?)'
@@ -70,7 +79,10 @@ measure("Prepared INSERT ({$rows})", function () use ($pdo, $rows) {
 
 // 2. Multi-row batched INSERT (500 rows/query)
 $pdo->exec('TRUNCATE bench_telemetry');
-measure("Batched INSERT x500 ({$rows})", function () use ($pdo, $rows) {
+measure("Batched INSERT x500 ({$rows})", $rows, function () use (
+   $pdo,
+   $rows
+) {
    $pdo->beginTransaction();
    $batch = [];
    $vals = [];
@@ -97,25 +109,51 @@ measure("Batched INSERT x500 ({$rows})", function () use ($pdo, $rows) {
    $pdo->commit();
 });
 
-// 3. Streaming COPY FROM STDIN via Generator
+// 3. Streaming COPY FROM STDIN via bounded Generator chunks
 $pdo->exec('TRUNCATE bench_telemetry');
-measure("COPY FROM STDIN ({$rows})", function () use ($pdo, $rows) {
-   $lines = (static function () use ($rows): Generator {
-      foreach (generateRows($rows) as $r) {
-         yield "{$r[0]}\t{$r[1]}\t{$r[2]}\t{$r[3]}";
-      }
-   })();
-
+measure("COPY FROM STDIN ({$rows})", $rows, function () use (
+   $pdo,
+   $rows
+) {
    $pdo->beginTransaction();
-   if ($pdo instanceof Pgsql) {
-      $pdo->copyFromArray('bench_telemetry', $lines, "\t", '\\\\N');
-   } else {
-      $pdo->pgsqlCopyFromArray(
-         'bench_telemetry',
-         $lines,
-         "\t",
-         '\\\\N'
-      );
+   $chunk = [];
+   foreach (generateRows($rows) as $r) {
+      $chunk[] = "{$r[0]}\t{$r[1]}\t{$r[2]}\t{$r[3]}";
+      if (count($chunk) === 10_000) {
+         if ($pdo instanceof Pgsql) {
+            $pdo->copyFromArray(
+               'bench_telemetry',
+               $chunk,
+               "\t",
+               '\\\\N'
+            );
+         } else {
+            $pdo->pgsqlCopyFromArray(
+               'bench_telemetry',
+               $chunk,
+               "\t",
+               '\\\\N'
+            );
+         }
+         $chunk = [];
+      }
+   }
+   if ($chunk !== []) {
+      if ($pdo instanceof Pgsql) {
+         $pdo->copyFromArray(
+            'bench_telemetry',
+            $chunk,
+            "\t",
+            '\\\\N'
+         );
+      } else {
+         $pdo->pgsqlCopyFromArray(
+            'bench_telemetry',
+            $chunk,
+            "\t",
+            '\\\\N'
+         );
+      }
    }
    $pdo->commit();
 });
